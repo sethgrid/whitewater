@@ -4,15 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"net/rpc"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/gorilla/mux"
 )
 
+// Debug, when set, will give detailed logs of what is going on
 var Debug bool
 
 // Reply states if the previous message was applied
@@ -99,7 +97,7 @@ func (n *Node) publish(msg []byte) error {
 			debug("going to publish to :%d (id %d)", node.Port, node.ID)
 			// TODO - pass a `message` including term and such
 
-			client, err := rpc.Dial("tcp", fmt.Sprintf("0.0.0.0:%d/%d", node.Port, node.ID))
+			client, err := rpc.Dial("tcp", fmt.Sprintf("0.0.0.0:%d", node.Port, node.ID))
 			if err != nil {
 				log.Println("unable to dial client ", err)
 				return
@@ -142,9 +140,12 @@ func NewNode(ID int) (*Node, error) {
 
 	n := &Node{ID: ID, Port: port, Log: make([]LogEntry, 0)}
 
-	rpc.Register(n)
-	// rpc.RegisterName(fmt.Sprintf("AppendEntry_%d", ID), n)
-	go rpc.Accept(l)
+	s := rpc.NewServer()
+	s.Register(n)
+	go s.Accept(l)
+	// rpc.Register(n)
+	// // rpc.RegisterName(fmt.Sprintf("AppendEntry_%d", ID), n)
+	// go rpc.Accept(l)
 
 	return n, nil
 }
@@ -154,16 +155,6 @@ type LogEntry struct {
 	Term  int
 	Index int
 	Data  []byte
-}
-
-func newRouter() *mux.Router {
-	r := mux.NewRouter()
-	r.HandleFunc("/", nodeRootHandler)
-	return r
-}
-
-func nodeRootHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Root Handler\n"))
 }
 
 // addrPort expects a net.Addr.String() format of `[::]:9000` and will return 9000
