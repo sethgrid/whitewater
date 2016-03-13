@@ -53,9 +53,10 @@ func init() {
 
 // LogEntry represents a raft log entry
 type LogEntry struct {
-	Term  int
-	Index int
-	Data  []byte
+	LeaderID int
+	Term     int
+	Index    int
+	Data     []byte
 }
 
 // Reply states if the previous message was applied
@@ -73,11 +74,23 @@ type Cluster struct {
 
 // CurLeader returns the leader node
 func (c *Cluster) CurLeader() *Node {
-	// TODO: should use atomic for leaderPoll? function? channel?
-	for c.curLeader == NullVote {
-		debug("no leader, polling...")
-		<-time.After(500 * time.Millisecond)
+	// TODO: should use atomic for leaderPoll
+	leaderAvailable := false
+	for !leaderAvailable {
+		if c.curLeader == NullVote {
+			debug("no leader, will poll")
+		} else if !canPingPort(c.Nodes[c.curLeader].Port) {
+			debug("no leader, ID %d is dead", c.curLeader)
+		} else {
+			leaderAvailable = true
+		}
+
+		if !leaderAvailable {
+			// if there is still no leader, wait a bit
+			<-time.After(500 * time.Millisecond)
+		}
 	}
+
 	return c.Nodes[c.curLeader]
 }
 
@@ -178,7 +191,7 @@ func (n *Node) publish(msg []byte) error {
 			}
 
 			reply := Reply{}
-			data := LogEntry{Term: 0, Index: 0, Data: msg}
+			data := LogEntry{LeaderID: n.Cluster.curLeader, Term: 0, Index: 0, Data: msg}
 			debug("calling AppendEntry...")
 			err = client.Call("Node.AppendEntry", data, &reply)
 			// err = client.Call(fmt.Sprintf("AppendEntry_%d.", node.ID), data, &reply)
@@ -195,7 +208,12 @@ func (n *Node) publish(msg []byte) error {
 // AppendEntry is the RPC call the leader will make
 func (n *Node) AppendEntry(msg LogEntry, reply *Reply) error {
 	debug("node %d AppendEntry %q", n.ID, string(msg.Data))
-	n.heartbeat <- struct{}{}
+
+	// don't send a heartbeat to yourself if you're the leader, it confuses elections
+	// TODO: isolate this odd behavior in the election
+	if msg.LeaderID != n.ID {
+		n.heartbeat <- struct{}{}
+	}
 
 	// n.mtx.Lock()
 	// defer n.mtx.Unlock()
@@ -242,15 +260,18 @@ func (n *Node) RequestVote(vote Vote, reply *VoteReply) error {
 
 	reply.Term = n.CurrentTerm
 	if vote.Term > n.CurrentTerm {
+		debug("node %d (term %d) got request for term %d, resetting vote", n.ID, n.CurrentTerm, vote.Term)
 		n.VotedFor = NullVote
 	}
-	if vote.Term < n.CurrentTerm || vote.LastLogIndex < n.CommitIndex || n.VotedFor == NullVote {
+	if vote.Term < n.CurrentTerm || vote.LastLogIndex < n.CommitIndex || n.VotedFor != NullVote {
+		debug("node %d (term %d) regected vote for node %d term %d (current vote: node %d)", n.ID, n.CurrentTerm, vote.CandidateID, vote.Term, n.VotedFor)
 		reply.VoteGranted = false
 	} else if n.VotedFor == NullVote {
 		n.VotedFor = vote.CandidateID
+		debug("node %d granted vote for node %d in term %d", n.ID, vote.CandidateID, vote.Term)
 		reply.VoteGranted = true
 	} else {
-		log.Println("hanging chad - how did this happen?")
+		log.Printf("node %d - hanging chad - how did this happen? %#v %#v", n.ID, n, vote)
 	}
 
 	debug("node %d got request vote from %d, granted %v", n.ID, vote.CandidateID, reply.VoteGranted)
@@ -264,11 +285,15 @@ func (n *Node) callElection() error {
 	n.State = CandidateState
 	n.electionCalled = true
 	tally := make(chan struct{})
-	votes := 0
+	votes := 1 // votes for itself, start at 1
 	majority := determineMajority(len(n.Cluster.Nodes))
 	n.closeElection = make(chan struct{})
-
+	n.CurrentTerm++
 	for _, node := range n.Cluster.Nodes {
+		if node.ID == n.ID {
+			// node already voted for itself
+			continue
+		}
 		go func(node *Node) {
 			debug("node %d calling an election to %d ...", n.ID, node.ID)
 			client, err := rpc.Dial("tcp", fmt.Sprintf("0.0.0.0:%d", node.Port))
@@ -333,6 +358,7 @@ func (n *Node) callElection() error {
 func (n *Node) sendHeartbeat() error {
 	debug("node %d is sending a heartbeat", n.ID)
 	data := LogEntry{}
+	data.LeaderID = n.Cluster.curLeader
 	data.Index = n.NextIndex
 	data.Term = n.CurrentTerm
 	data.Data = nil
@@ -377,6 +403,7 @@ func NewNode(ID int) (*Node, error) {
 			select {
 			case <-heartbeat:
 				debug("node %d got a heartbeat", n.ID)
+				n.State = FollowerState // TODO: lock / atomic
 				if n.electionCalled {
 					debug("node %d got heartbeat during election, closing election", n.ID)
 					close(n.closeElection)
@@ -418,4 +445,16 @@ func debug(format string, v ...interface{}) {
 
 func determineMajority(count int) int {
 	return count/2 + 1
+}
+
+func canPingPort(port int) bool {
+	// heh. Sounds like "con-air". Nick Cage ftw.
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("[0.0.0.0]:%d", port), 1*time.Second)
+	if err != nil {
+		log.Printf("unable to ping leader on port %d: %v", port, err)
+		return false
+	}
+	log.Println("pinged leader on port ", port)
+	conn.Close()
+	return true
 }

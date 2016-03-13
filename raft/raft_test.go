@@ -51,7 +51,7 @@ func TestLeaderElection(t *testing.T) {
 	newLeaderID := newLeader.ID
 
 	if newLeaderID == originalLeaderID {
-		t.Errorf("Got id %d, want a different id for new leader", newLeaderID)
+		t.Errorf("Got id %d, want a different than id %d for new leader", newLeaderID, originalLeaderID)
 	}
 }
 
