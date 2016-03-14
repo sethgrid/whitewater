@@ -1,9 +1,11 @@
 package raft
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSend(t *testing.T) {
-	t.Skip()
 	Debug = false
 
 	clusterSize := 5
@@ -19,6 +21,9 @@ func TestSend(t *testing.T) {
 		t.Fatal("unable to send data to leader", err)
 	}
 
+	// TODO: have cluster.Wait() that will wait until total replication
+	<-time.After(500 * time.Millisecond)
+
 	for _, node := range cluster.Nodes {
 		if len(node.Log) != 1 {
 			t.Errorf("node %d got %d entry/entries, want %d", node.ID, len(node.Log), 1)
@@ -27,7 +32,8 @@ func TestSend(t *testing.T) {
 }
 
 func TestLeaderElection(t *testing.T) {
-	Debug = true
+	// t.Skip()
+	Debug = false
 
 	clusterSize := 5
 	debug("test > setting up cluster")

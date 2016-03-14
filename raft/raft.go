@@ -181,7 +181,7 @@ func (n *Node) publish(msg []byte) error {
 		wg.Add(1)
 		go func(node *Node) {
 			defer wg.Done()
-			debug("going to publish to :%d (id %d)", node.Port, node.ID)
+			log.Printf("going to publish to :%d (id %d)", node.Port, node.ID)
 			// TODO - pass a `message` including term and such
 
 			client, err := rpc.Dial("tcp", fmt.Sprintf("0.0.0.0:%d", node.Port))
@@ -191,7 +191,7 @@ func (n *Node) publish(msg []byte) error {
 			}
 
 			reply := Reply{}
-			data := LogEntry{LeaderID: n.Cluster.curLeader, Term: 0, Index: 0, Data: msg}
+			data := LogEntry{LeaderID: n.Cluster.curLeader, Term: node.CurrentTerm, Index: len(node.Log) + 1, Data: msg}
 			debug("calling AppendEntry...")
 			err = client.Call("Node.AppendEntry", data, &reply)
 			// err = client.Call(fmt.Sprintf("AppendEntry_%d.", node.ID), data, &reply)
@@ -221,18 +221,19 @@ func (n *Node) AppendEntry(msg LogEntry, reply *Reply) error {
 	if msg.Term > n.CurrentTerm {
 		n.CurrentTerm = msg.Term
 		// need lock
-		debug("node %d reverting to follower state", n.ID)
+		log.Printf("node %d reverting to follower state", n.ID)
 		n.State = FollowerState
 	}
 
 	if msg.Term < n.CurrentTerm {
 		// ignore request
-		debug("append entry ignored, old term")
+		log.Printf("append entry term %d ignored, current term: %d", msg.Term, n.CurrentTerm)
 		return nil
 	}
 
 	// if data in nil, then it is only a heartbeat
 	if msg.Data != nil {
+		log.Printf("Node %d (state: %d, leader: %v) appending log", n.ID, n.State, n.State == LeaderState)
 		n.Log = append(n.Log, msg)
 	}
 	reply.Applied = true
@@ -289,6 +290,7 @@ func (n *Node) callElection() error {
 	majority := determineMajority(len(n.Cluster.Nodes))
 	n.closeElection = make(chan struct{})
 	n.CurrentTerm++
+	log.Printf("Node %d called election, new term: %d", n.ID, n.CurrentTerm)
 	for _, node := range n.Cluster.Nodes {
 		if node.ID == n.ID {
 			// node already voted for itself
@@ -330,7 +332,7 @@ func (n *Node) callElection() error {
 			if votes >= majority {
 				debug("node %d is now leader", n.ID)
 				n.State = LeaderState
-				n.CurrentTerm++
+				// n.CurrentTerm++
 				n.CommitIndex = 0
 				n.LastApplied = 0
 				n.MatchIndex = 0
@@ -395,7 +397,24 @@ func NewNode(ID int) (*Node, error) {
 	s.Register(n)
 	go s.Accept(l)
 
+	// make sure periodic heartbeats go out from the leader to ensure they don't get deposed for no reason
 	go func() {
+		for {
+			select {
+			case <-time.After(TriggerElectionTimeoutMin / 2):
+				if n.State == LeaderState {
+					n.sendHeartbeat()
+				}
+			}
+		}
+	}()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Println("Recovered in f", r)
+			}
+		}()
 		for {
 			max := TriggerElectionTimeoutCap - TriggerElectionTimeoutMin
 			triggerTimeout := TriggerElectionTimeoutMin + time.Duration(rand.Intn(int(max/1e6)))*time.Millisecond
@@ -419,7 +438,6 @@ func NewNode(ID int) (*Node, error) {
 				}()
 			}
 		}
-
 	}()
 
 	n.close = l.Close
@@ -454,7 +472,6 @@ func canPingPort(port int) bool {
 		log.Printf("unable to ping leader on port %d: %v", port, err)
 		return false
 	}
-	log.Println("pinged leader on port ", port)
 	conn.Close()
 	return true
 }
