@@ -14,17 +14,16 @@ import (
 
 type state int
 
-// TriggerElectionTimeoutCap is the max time when a node decides to run for office
-// var TriggerElectionTimeoutCap = 150 * time.Millisecond
-var TriggerElectionTimeoutCap = 7 * time.Second
-
 // TriggerElectionTimeoutMin is the minimum amount of time before a node runs for office
 // var TriggerElectionTimeoutMin = 75 * time.Millisecond
-var TriggerElectionTimeoutMin = 2 * time.Second
+var TriggerElectionTimeoutMin = 500 * time.Millisecond
+
+// TriggerElectionTimeoutCap is the max time when a node decides to run for office
+var TriggerElectionTimeoutCap = 10 * TriggerElectionTimeoutMin
 
 // ElectionTimeout the time that a node will wait for votes on its nomination
 // This should be about an order of magnitude greater than the TriggerElectionTimeoutCap
-var ElectionTimeout = TriggerElectionTimeoutCap * 10
+var ElectionTimeout = 10 * TriggerElectionTimeoutCap
 
 // ErrElectionTimeout is returned when an election times out
 var ErrElectionTimeout = fmt.Errorf("election timed out")
@@ -74,6 +73,8 @@ type Cluster struct {
 
 // CurLeader returns the leader node
 func (c *Cluster) CurLeader() *Node {
+	c.Lock()
+	defer c.Unlock()
 	// TODO: should use atomic for leaderPoll
 	leaderAvailable := false
 	for !leaderAvailable {
@@ -135,11 +136,37 @@ func (c *Cluster) Send(msg []byte) error {
 	return nil
 }
 
+// Wait returns when the cluster is fully replicated
+func (c *Cluster) Wait() error {
+	leader := c.CurLeader()
+	count := len(leader.Log)
+	var isReplicated bool
+	var shortLogFound bool
+	// TODO: use a single bool
+	for !isReplicated {
+		for _, n := range c.Nodes {
+			if len(n.Log) < count {
+				shortLogFound = true
+				log.Printf("short log entry (len %d on node %d, keep waiting... ", len(n.Log), n.ID)
+			}
+		}
+		if !shortLogFound {
+			isReplicated = true
+		}
+	}
+	return nil
+}
+
 // StopNode turns off a node
 func (c *Cluster) StopNode(id int) error {
-	for _, node := range c.Nodes {
+	c.Lock()
+	defer c.Unlock()
+
+	for i, node := range c.Nodes {
 		if node.ID == id {
 			node.stop()
+			// delete this node
+			c.Nodes = append(c.Nodes[:i], c.Nodes[i+1:]...)
 			return nil
 		}
 	}
@@ -183,18 +210,32 @@ func (n *Node) publish(msg []byte) error {
 			defer wg.Done()
 			log.Printf("going to publish to :%d (id %d)", node.Port, node.ID)
 			// TODO - pass a `message` including term and such
-
-			client, err := rpc.Dial("tcp", fmt.Sprintf("0.0.0.0:%d", node.Port))
-			if err != nil {
-				log.Println("unable to dial client ", err)
-				return
+			var isConnected bool
+			var err error
+			client := &rpc.Client{}
+			retry := 10
+			for !isConnected {
+				client, err = rpc.Dial("tcp", fmt.Sprintf("0.0.0.0:%d", node.Port))
+				if err != nil {
+					// TODO: have a limit on retry
+					log.Println("unable to dial client, will retry ", err)
+					<-time.After(1 * time.Second)
+					retry--
+					if retry > 0 {
+						continue
+					}
+					return
+				} else {
+					isConnected = true
+				}
 			}
 
 			reply := Reply{}
-			data := LogEntry{LeaderID: n.Cluster.curLeader, Term: node.CurrentTerm, Index: len(node.Log) + 1, Data: msg}
 			debug("calling AppendEntry...")
+
+			data := LogEntry{LeaderID: n.Cluster.curLeader, Term: node.CurrentTerm, Index: len(node.Log) + 1, Data: msg}
+			// TODO - wrap in loop on error?
 			err = client.Call("Node.AppendEntry", data, &reply)
-			// err = client.Call(fmt.Sprintf("AppendEntry_%d.", node.ID), data, &reply)
 			if err != nil {
 				log.Println("unable to call client ", err)
 			}
@@ -425,6 +466,8 @@ func NewNode(ID int) (*Node, error) {
 				n.State = FollowerState // TODO: lock / atomic
 				if n.electionCalled {
 					debug("node %d got heartbeat during election, closing election", n.ID)
+
+					// TODO: when this is closed, we get into an election loop if the chan was already closed
 					close(n.closeElection)
 				}
 				// TODO: elections are not working

@@ -1,13 +1,8 @@
 package raft
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-func TestSend(t *testing.T) {
-	Debug = false
-
+func TestSendToCluster(t *testing.T) {
 	clusterSize := 5
 	debug("test > setting up cluster")
 	cluster, err := NewCluster(clusterSize)
@@ -21,8 +16,7 @@ func TestSend(t *testing.T) {
 		t.Fatal("unable to send data to leader", err)
 	}
 
-	// TODO: have cluster.Wait() that will wait until total replication
-	<-time.After(500 * time.Millisecond)
+	cluster.Wait()
 
 	for _, node := range cluster.Nodes {
 		if len(node.Log) != 1 {
@@ -32,9 +26,6 @@ func TestSend(t *testing.T) {
 }
 
 func TestLeaderElection(t *testing.T) {
-	// t.Skip()
-	Debug = false
-
 	clusterSize := 5
 	debug("test > setting up cluster")
 	cluster, err := NewCluster(clusterSize)
@@ -58,6 +49,51 @@ func TestLeaderElection(t *testing.T) {
 
 	if newLeaderID == originalLeaderID {
 		t.Errorf("Got id %d, want a different than id %d for new leader", newLeaderID, originalLeaderID)
+	}
+}
+
+func TestSendToClusterWithLeaderFailure(t *testing.T) {
+	clusterSize := 5
+	debug("test > setting up cluster")
+	cluster, err := NewCluster(clusterSize)
+	if err != nil {
+		t.Fatal("unable to create new cluster ", err)
+	}
+
+	debug("test > getting leader...")
+	leader := cluster.CurLeader()
+	originalLeaderID := leader.ID
+
+	err = cluster.Send([]byte("command 1"))
+	if err != nil {
+		t.Fatal("unable to send command 1 to cluster ", err)
+	}
+
+	debug("test > stopping leader...")
+	err = cluster.StopNode(originalLeaderID)
+	if err != nil {
+		t.Fatal("unable to stop node ", err)
+	}
+
+	debug("test > getting new leader...")
+	newLeader := cluster.CurLeader()
+	newLeaderID := newLeader.ID
+
+	err = cluster.Send([]byte("command 2"))
+	if err != nil {
+		t.Fatal("unable to send command 2 to cluster ", err)
+	}
+
+	if newLeaderID == originalLeaderID {
+		t.Errorf("Got id %d, want a different than id %d for new leader", newLeaderID, originalLeaderID)
+	}
+
+	cluster.Wait()
+
+	for _, node := range cluster.Nodes {
+		if len(node.Log) != 2 {
+			t.Errorf("node %d got %d entry/entries, want %d", node.ID, len(node.Log), 2)
+		}
 	}
 }
 
