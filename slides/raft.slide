@@ -1,0 +1,79 @@
+Intro to Raft
+08 Apr 2016
+Tags: go golang raft
+
+Seth Ammons
+Software Engineer; Distributed Systems
+seth.ammons@gmail.com
+http://sethammons.com/
+
+* Who am I?
+
+- Go Enthusiast
+- Senior Engineer at [[http://www.sendgrid.com][SendGrid]] (we're hiring!)
+- Lives in a village
+
+.image ./black_and_white.jpg
+
+* Consensus
+
+- From the Raft Paper:
+  Consensus algorithms allow a collection of machines
+  to work as a coherent group that can survive the failures
+  of some of its members.
+
+- Before Raft? Paxos!
+
+* Goals of Raft
+
+- Primary Goal: understandability (unlike Paxos)
+- Facilitate intuition for system builders
+- Not just work, but to be obvious WHY it works
+- Separate leader election, log replication, and safety
+
+*Was* *the* *prmary* *goal* *met?*
+
+- Probably. A study at two universities showed that students found Raft significatly easier to understand and reason about.
+
+* The Raft Consensus Algorithm
+- *Leader* *election*: a new leader must be chosen when an existing leader fails.
+- *Log* *replication*: the leader must accept log entries from clients and replicate them across the cluster, forcing the other logs to agree with its own
+- *Safety*: if any server has applied a particular log entry to its state machine, then no other server may apply a different command for the same log index.
+
+* Cheat Sheet 
+[ Source: Raft Paper https://ramcloud.stanford.edu/raft.pdf ]
+
+.image ./cheatsheet.png 400 _
+
+* Raft Basics
+
+- States: leader, follower, or candidate
+- Time is in Terms that increase with each new election
+- Communication via two RPC calls: AppendEntry and RequestVote
+- Logs: composed of term, commit index, entries
+
+* Raft Basics - Election 
+
+- If the election timeout happens, call for an election
+- Nodes reject if their Term is greater than the candidate
+- If the candidate's log is as up-to-date as the receiver, grant the vote
+
+* Raft Basics -  Replication
+
+- The leader issues the AppendEntry RPC. When a majority respond, the log is committed to the leader.
+- The call is retried indefinately until the node responds
+- Nodes reject if they are more up-to-date than the leader (term/election edge case)
+- Nodes, on conflict in index or content, take the leader's value
+
+* Raft Visualizations
+- [[https://raft.github.io/]] Raft Visualization
+- [[http://thesecretlivesofdata.com/raft/]] Step by Step walk through of the algorithm 
+
+* My toy implementation
+
+- cd raft && go test
+- shows an election, a log replication, a node killed, a new election, and log replication
+
+* Questions?
+
+.image http://www.leisuresportsphoto.com/mp_photos/90695/IMG_0609f.jpg
